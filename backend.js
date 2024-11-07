@@ -3,8 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
-const crypto = require('crypto');
+
 require('dotenv').config();
 
 const app = express();
@@ -12,33 +11,33 @@ app.use(cors());
 app.use(bodyParser.json());
 
 
-let tempEmail = null;
-const isGmailEmail = (email) => {
-  const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
-  return gmailRegex.test(email);
-};
+
 
 mongoose.connect(`mongodb+srv://elankumaran2103:Elan2005@cluster0.ox2vh.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB connected successfully'))
   .catch(err => console.log(err));
 
+  const userSchema = new mongoose.Schema({
+    username: {
+      type: String,
+      required: true,
+      unique: true, 
+    },
+    email: {
+      type: String,
+      required: true,
+      unique: true, 
+      lowercase: true,
+    },
+    uid: {
+      type: String,
+      required: true,
+      unique: true, 
+    },
 
-const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  otp: { type: String },
-  otpExpires: { type: Date }
-});
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: 'elankumaranr.22cse@kongu.edu', 
-    pass: 'elan2005', 
-  },
-  connectionTimeout: 60000,
-});
-const User = mongoose.model('User', userSchema);
+  }, { timestamps: true });
+  
+  const User = mongoose.model('User', userSchema);
 
 
 const RecipeSchema = new mongoose.Schema({
@@ -61,6 +60,10 @@ const RecipeSchema = new mongoose.Schema({
   ingredients: {
     type: [String],
     required: true
+  },
+  procedure: {
+    type: String,
+    required: true
   }
 });
 
@@ -72,9 +75,65 @@ const adminSchema = new mongoose.Schema({
 });
 
 const Admin = mongoose.model('Admin', adminSchema);
+
+const wishlistSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  recipes: [{ type: Number, ref: 'Recipe' }]
+});
+
+const Wishlist = mongoose.model('Wishlist', wishlistSchema);
+
+app.delete('/recipes/:id', async (req, res) => {
+  await Recipe.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Recipe deleted successfully!' });
+});
+
+app.get('/wishlist/:userId', async (req, res) => {
+  try {
+    const wishlist = await Wishlist.findOne({ userId: req.params.userId });
+    res.json(wishlist ? wishlist.recipes : []);
+  } catch (error) {
+    res.status(500).send('Error fetching wishlist');
+  }
+});
+
+app.post('/wishlist/add', async (req, res) => {
+  const { userId, recipeId } = req.body;
+  console.log(recipeId);
+  try {
+    let wishlist = await Wishlist.findOne({ userId });
+    if (!wishlist) {
+      wishlist = new Wishlist({ userId, recipes: [] });
+    }
+    if (!wishlist.recipes.includes(recipeId)) {
+      wishlist.recipes.push(recipeId);
+      await wishlist.save();
+    }
+    console.log(3);
+    res.status(200).send('Recipe added to wishlist');
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Error adding to wishlist');
+  }
+});
+
+app.post('/wishlist/remove', async (req, res) => {
+  const { userId, recipeId } = req.body;
+  try {
+    const wishlist = await Wishlist.findOne({ userId });
+    if (wishlist) {
+      wishlist.recipes = wishlist.recipes.filter(id => id!== recipeId);
+      await wishlist.save();
+    }
+    res.status(200).send('Recipe removed from wishlist');
+  } catch (error) {
+    res.status(500).send('Error removing from wishlist');
+  }
+});
+
 app.get('/recipes', async (req, res) => {
   try {
-    const { label} = req.query;
+    const { label, ingredients, timeLimit } = req.query;
 
     let filter = {};
 
@@ -82,16 +141,27 @@ app.get('/recipes', async (req, res) => {
       filter.label = { $regex: label, $options: 'i' }; 
     }
 
+    if (ingredients) {
+      const ingredientList = ingredients.split(',').map(ing => ing.trim());
+      filter.ingredients = { $all: ingredientList }; 
+    }
+
+    if (timeLimit) {
+      filter.totalTime = { $lte: parseInt(timeLimit, 10) };
+    }
+
     const recipes = await Recipe.find(filter);
 
     res.json(recipes);
   } catch (err) {
+    console.error('Error fetching recipes:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
+
 app.post('/recipes', async (req, res) => {
-  const { label, image, totalTime, calories, ingredients } = req.body;
+  const { label, image, totalTime, calories, ingredients,procedure } = req.body;
 
   try {
     const newRecipe = new Recipe({
@@ -99,7 +169,8 @@ app.post('/recipes', async (req, res) => {
       image,
       totalTime,
       calories,
-      ingredients
+      ingredients,
+      procedure,
     });
 
     await newRecipe.save();
@@ -147,94 +218,47 @@ app.post('/admin/signup', async (req, res) => {
 
 
 app.post('/api/login', async (req, res) => {
-  const { identifier, password } = req.body;
+  const { identifier} = req.body;
 
   try {
+   
     const user = await User.findOne({ $or: [{ email: identifier }, { username: identifier }] });
 
     if (!user) {
       return res.status(400).json({ message: 'User not found. Please check your username or email.' });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Incorrect password. Please try again.' });
-    }
 
-    res.status(200).json({ message: 'Login successful', user: { username: user.username, email: user.email } });
+    res.status(200).json({
+      message: 'Login successful',
+      user: {
+        username: user.username,
+        email: user.email,
+        uid: user.uid, 
+      },
+    });
   } catch (err) {
     console.error('Error during login:', err);
     res.status(500).json({ message: 'Error logging in. Please try again later.' });
   }
 });
 
-const sendOtp = async (email, otp) => {
-  const mailOptions = {
-    from: 'elankumaranr.22cse@kongu.edu',
-    to: email,
-    subject: 'Your OTP Code',
-    text: `Your OTP code is ${otp}. It is valid for 5 minutes.`,
-  };
-
-  await transporter.sendMail(mailOptions);
-};
-
 app.post('/api/signup', async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, uid } = req.body;
 
   try {
-    if (!isGmailEmail(email)) {
-      return res.status(400).json({ message: 'Please provide a valid Gmail address.' });
-    }
-
+    
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ message: 'Email already exists' });
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const newUser = new User({ username, email, uid }); 
+    await newUser.save();
 
-    const otp = crypto.randomInt(100000, 999999).toString();
-    const otpExpires = Date.now() + 5 * 60 * 1000;
-
-    tempEmail = email;
-
-    const newUser = new User({ username, email: tempEmail, password: hashedPassword, otp, otpExpires });
-    newUser.save();
-    await sendOtp(tempEmail, otp);
-
-    res.status(201).json({ message: 'User created successfully. Check your email for the OTP.' });
+    res.status(201).json({ message: 'User created successfully.' });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Error creating user' });
-    console.log(err);
   }
 });
-
-app.post('/api/verify-otp', async (req, res) => {
-  const { otp } = req.body;
-
-  try {
-    if (!tempEmail) return res.status(400).json({ message: 'No email found. Please sign up first.' });
-
-    const user = await User.findOne({ email: tempEmail });
-
-    if (!user) return res.status(400).json({ message: 'User not found' });
-
-    if (user.otp === otp && Date.now() < user.otpExpires) {
-      user.otp = undefined;
-      user.otpExpires = undefined;
-
-      await user.save();
-
-      tempEmail = null;
-
-      res.json({ message: 'OTP verified successfully. You can now log in.' });
-    } else {
-      res.status(400).json({ message: 'Invalid or expired OTP.' });
-    }
-  } catch (err) {
-    res.status(500).json({ message: 'Error verifying OTP' });
-  }
-});
-
 const PORT = 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
